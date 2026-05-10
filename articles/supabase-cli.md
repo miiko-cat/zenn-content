@@ -192,17 +192,89 @@ curl --request POST 'https://127.0.0.1:54321/functions/v1/{関数名}' \
 
 ヘッダーにANON_KEYを含める必要がありますが、これは`supabase status`で確認することができます。
 
-#### --no-verify-JWTの注意点
+#### JWT検証の注意点
 関数を実行する際、デフォルトでJWT検証がONになっています。ただし、このJWT検証は旧方式となるため、**公式はJWT検証をOFFにし、関数内で独自に認証/認可ロジックを組む**ことを推奨しています。
 
 このJWT検証をOFFにするためには、①`supabase functions serve`にオプションを付ける方法と②config.tomlファイルに設定をする方法があります。
 
-前者の関数の実行時にフラグを付ける方法は、失念してしまうと、デフォルトのJWT検証がONになってしまうため、後者のconfig.tomlで設定をする方法をオススメします。
+##### 認証/認可実装方法
+前述したJWT検証をOFFにする場合、サーバーレス関数内で、独自の認証/認可ロジックを組む必要があることを述べました。
+
+どのように認証/認可するかは、ユースケース毎に異なるので一概に言えないのですが、サンプルとして私の実装を載せておきます。
+```ts:サンプル.ts
+const authHeader = req.headers.get('Authorization');
+const token = authHeader.replace('Bearer ', '');
+const { data, JWTerror } = await supabase.auth.getClaims(token);
+const userEmail = data?.claims?.email;
+if (!userEmail || JWTerror) {
+  return Response.json({
+    msg: 'Invalid JWT'
+  }, {
+    status: 401,
+    headers: corsHeaders
+  });
+}
+```
+上記コードでやっていることを説明します。
+
+Supabase Edge Functionsへのリクエストのheaderには、以下の形式でアクセストークンが格納されています。
+
+```
+Authorization: Bearer <アクセストークン>
+```
+
+このアクセストークンはJWTで構成されており、`await supabase.auth.getClaims`で、JWTトークン(JWTに格納されている情報)を取得します。
+
+その中にEmailが存在しなければ、JWT検証失敗として、401エラーを返すことになっています。
 
 ##### フラグを付けてデプロイするか、config.tomlに設定するか
+JWT検証をOFFにするには、2つの方法があります。
+
+ひとつ目は、関数をデプロイ(公開)するときに、JWT検証OFFのフラグを付けることです。
+```
+supabase functions serve --no-verify-jwt
+```
+上記フラグを付けることで、JWT検証をOFFにすることができます。
+
+2つ目は、config.tomlに各関数にJWT検証をOFFにする設定をします。
+
+ローカルにSupabaseの環境を作る際に、supabaseフォルダ直下に`config.toml`という設定ファイルが作成されます。
+その中に各関数にJWT検証OFFの設定ができます。
+```
+[functions.analyze-diary]
+verify_jwt = false
+```
+上記の設定は、analyze-diaryという関数のJWT検証をOFFにします。
+この記載をし、関数をデプロイすることで設定がサーバー側に反映されます。
+
+前者の関数の実行時にフラグを付ける方法は、失念してしまうと、デフォルトのJWT検証がONになってしまうため、**後者のconfig.tomlで設定をする方法をオススメ**します。
 
 ##### アクセストークンが必要になる
+JWT検証をOFFにした場合、アクセストークンをheaderに設定する必要があることを話しました。
+アプリ側でSupabaseで既に認証され、ログインしている場合は、headerにアクセストークンが設定された状態でサーバレス関数がコールされるため、実装で気を付けることはないのですが、ローカルで関数をコールする場合、アクセストークンは自分で取得してheaderに設定する必要があります。
+
+アクセストークンは、以下のCURLコマンドで取得できます。
+```
+curl -i "http://127.0.0.1:54321/auth/v1/token?grant_type=password" 
+  -H "apikey: <Publishable key>" 
+  -H "Content-Type: application/json" 
+  -d '{
+  "email":"<メールアドレス>",
+  "password":"<パスワード>"
+  }'
+```
+<Publishable key>には、`supabase status`で確認できるPublishable keyを指定します。
+<メールアドレス>にはアカウントのメールアドレス、<パスワード>にはアカウントのパスワードを設定しますが、このアカウントはSupabaseに登録されている必要があるため、注意してください。
+
 #### Edge Functionsをデプロイする方法
+関数を実装した後、次のコマンドでデプロイすることができます。
+```
+supabase functions deploy <関数名>
+```
+前述した通り、`config.toml`でJWT検証をOFFにしていない場合、`--no-verify-jwt`フラグを付ける必要があります。
+```
+supabase functions deploy <関数名> --no-verify-jwt
+```
 
 ### サーバのDB定義をローカルDBに反映して、DB定義変更＆デプロイするケース
 #### ローカルDBに定義を反映する方法
